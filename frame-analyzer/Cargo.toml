@@ -9,6 +9,15 @@ documentation.workspace = true
 repository.workspace = true
 license.workspace = true
 
+# 新增[lib]段：指定编译类型为cdylib（C动态库）+ rlib（保留原有Rust库）
+[lib]
+name = "frame_analyzer"  # 生成的SO文件名会是libframe_analyzer.so
+path = "src/lib.rs"      # 库入口文件（原有路径，无需修改）
+crate-type = [
+    "cdylib",  # 核心：生成C/C++可调用的动态库
+    "rlib"     # 保留：不影响原有Rust项目依赖使用
+]
+
 [dependencies]
 aya = "0.13.1"
 frame-analyzer-ebpf-common = { path = "../frame-analyzer-ebpf-common", features = ["user"], version = "0" }
