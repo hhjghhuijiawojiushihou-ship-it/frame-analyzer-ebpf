@@ -11,3 +11,10 @@ readme = "README.md"
 description = "Track the frametime of Android apps, based on ebpf & uprobe"
 license = "GPL-3.0"
 documentation = "https://shadow3aaa.github.io/frame-analyzer-ebpf"
+
+# 新增：workspace 级静态链接的 release 配置（子项目自动继承）
+[profile.release]
+lto = true
+panic = "abort"
+codegen-units = 1
+opt-level = 3
