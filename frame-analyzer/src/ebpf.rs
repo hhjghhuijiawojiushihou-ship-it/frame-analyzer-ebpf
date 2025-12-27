@@ -18,7 +18,7 @@
  */
 use aya::{Ebpf, include_bytes_aligned};
 use ctor::ctor;
-
+use log::info; // 新增：导入日志模块
 use crate::error::Result;
 
 #[ctor]
@@ -30,9 +30,11 @@ fn ebpf_workround() {
         rlim_max: libc::RLIM_INFINITY,
     };
     unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
+    info!("🔧 已调整 memlock 限制（适配旧内核 BPF 内存管理）"); // 新增：日志输出
 }
 
 pub fn load_bpf() -> Result<Ebpf> {
+    info!("📥 开始加载 BPF 字节码..."); // 新增：日志输出
     // This will include eBPF object file as raw bytes at compile-time and load it at runtime.
     #[cfg(debug_assertions)]
     let bpf = Ebpf::load(include_bytes_aligned!(concat!(
@@ -45,5 +47,6 @@ pub fn load_bpf() -> Result<Ebpf> {
         "/ebpf_target/bpfel-unknown-none/release/frame-analyzer-ebpf"
     )))?;
 
+    info!("✅ BPF 字节码加载成功，已注入内核"); // 新增：日志输出
     Ok(bpf)
 }

@@ -1,23 +1,24 @@
 /*
-* Copyright (c) 2024 shadow3aaa@gitbub.com
-*
-* This file is part of frame-analyzer-ebpf.
-*
-* This program is free software: you can redistribute it and/or modify
-* it under the terms of the GNU General Public License as published by
-* the Free Software Foundation, either version 3 of the License, or
-* (at your option) any later version.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-* GNU General Public License for more details.
-*
-* You should have received a copy of the GNU General Public License
-* along with this program. If not, see <https://www.gnu.org/licenses/>.
-*/
+ * Copyright (c) 2024 shadow3aaa@gitbub.com
+ *
+ * This file is part of frame-analyzer-ebpf.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 
 #![warn(clippy::nursery, clippy::all, clippy::pedantic)]
+
 #![allow(
     clippy::module_name_repetitions,
     clippy::cast_possible_wrap,
@@ -78,8 +79,12 @@
 //! # }
 //! ```
 
-// 关键修改：公开导出C接口模块，确保编译时包含该代码
+// 关键修改1：导入日志模块（用于验证EBPF加载状态）
+use log::{info, debug};
+
+// 关键修改2：公开导出C接口模块，确保编译时包含该代码
 pub mod c_api;
+
 mod analyze_target;
 mod ebpf;
 mod error;
@@ -91,7 +96,7 @@ use std::{
     time::Duration,
 };
 
-use mio::{Events, Interest, Poll, Token, event::Event, unix::SourceFd};
+use mio::{event::Event, Events, Interest, Poll, Token, unix::SourceFd};
 
 use analyze_target::AnalyzeTarget;
 pub use error::AnalyzerError;
@@ -155,6 +160,10 @@ impl Analyzer {
     /// # }
     /// ```
     pub fn new() -> Result<Self> {
+        // 关键修改3：初始化日志（仅调试用，不影响性能和功能）
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+        info!("✅ Analyzer 初始化完成，准备加载 EBPF 程序");
+
         let poll = None;
         let map = HashMap::new();
         let buffer = VecDeque::with_capacity(EVENT_MAX);
@@ -191,13 +200,16 @@ impl Analyzer {
     /// ```
     pub fn attach_app(&mut self, pid: Pid) -> Result<()> {
         if self.contains(pid) {
+            info!("⚠️ 目标 PID: {} 已挂载，无需重复操作", pid);
             return Ok(());
         }
 
+        info!("📌 开始为 PID: {} 挂载 Uprobe 探针", pid);
         let uprobe = UprobeHandler::attach_app(pid)?;
         self.map.insert(pid, AnalyzeTarget::new(uprobe));
         self.register_poll()?;
 
+        info!("🎉 PID: {} 探针挂载成功，已注册事件监听", pid);
         Ok(())
     }
 
@@ -228,6 +240,7 @@ impl Analyzer {
     /// ```
     pub fn detach_app(&mut self, pid: Pid) -> Result<()> {
         if !self.contains(pid) {
+            info!("⚠️ 目标 PID: {} 未挂载，无需解绑", pid);
             return Ok(());
         }
 
@@ -235,6 +248,7 @@ impl Analyzer {
         self.buffer.retain(|pid_event| *pid_event != pid);
         self.register_poll()?;
 
+        info!("✅ PID: {} 已成功解绑探针", pid);
         Ok(())
     }
 
@@ -260,8 +274,10 @@ impl Analyzer {
     /// # }
     /// ```
     pub fn detach_apps(&mut self) {
+        let count = self.map.len();
         self.map.clear();
         self.buffer.clear();
+        info!("✅ 已解绑所有挂载的探针（共 {} 个进程）", count);
     }
 
     /// Attempts to wait for a frametime value on this analyzer
@@ -295,6 +311,8 @@ impl Analyzer {
                 let mut events = Events::with_capacity(EVENT_MAX);
                 let _ = poll.poll(&mut events, None);
 
+                // 核心修改：替换 events.len() 为 events.iter().count()
+                debug!("📥 收到 {} 个事件，添加到缓冲区", events.iter().count());
                 self.buffer.extend(events.iter().map(event_to_pid));
             }
 
@@ -304,6 +322,7 @@ impl Analyzer {
         let pid = self.buffer.pop_front()?;
         let frametime = self.map.get_mut(&pid)?.update()?;
 
+        debug!("📊 PID: {} 帧数据：{:?}", pid, frametime);
         Some((pid, frametime))
     }
 
@@ -339,6 +358,8 @@ impl Analyzer {
                 let mut events = Events::with_capacity(EVENT_MAX);
                 let _ = poll.poll(&mut events, Some(time));
 
+                // 核心修改：替换 events.len() 为 events.iter().count()
+                debug!("📥 超时 {}ms 内收到 {} 个事件", time.as_millis(), events.iter().count());
                 self.buffer.extend(events.iter().map(event_to_pid));
             }
 
@@ -348,6 +369,7 @@ impl Analyzer {
         let pid = self.buffer.pop_front()?;
         let frametime = self.map.get_mut(&pid)?.update()?;
 
+        debug!("📊 PID: {} 帧数据：{:?}", pid, frametime);
         Some((pid, frametime))
     }
 
@@ -371,6 +393,7 @@ impl Analyzer {
                 Token(*pid as usize),
                 Interest::READABLE,
             )?;
+            debug!("🔗 PID: {} 已注册事件监听", pid);
         }
 
         self.poll = Some(poll);
