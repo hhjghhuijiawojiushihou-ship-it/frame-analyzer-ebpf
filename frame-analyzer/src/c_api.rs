@@ -1,23 +1,25 @@
 // frame-analyzer/src/c_api.rs
 use std::{
-    sync::{Arc, Mutex, OnceLock, PoisonError},
+    sync::{Arc, Mutex, OnceLock}, // 移除未使用的PoisonError导入
     time::Duration,
 };
 
 use libc::{c_double, c_int};
-use crate::{Analyzer, AnalyzerError, Pid};
+// 修复：删除未使用的AnalyzerError导入
+use crate::{Analyzer, Pid};
 
 // 全局单例：仅维护 Analyzer 实例（无缓存）
 static GLOBAL_ANALYZER: OnceLock<Arc<Mutex<Analyzer>>> = OnceLock::new();
 
 /// 辅助函数：安全锁定 Mutex，处理 poisoned 情况
-/// 修复：显式指定返回类型为 MutexGuard，避免 impl 匿名类型导致的编译错误
+/// 修复：显式指定返回类型为 MutexGuard，修复PoisonError::new的错误使用
 fn lock_analyzer(analyzer: &Arc<Mutex<Analyzer>>) -> Result<std::sync::MutexGuard<'_, Analyzer>, c_int> {
     match analyzer.lock() {
         Ok(guard) => Ok(guard),
-        Err(PoisonError::new(guard)) => {
+        // 修复：PoisonError是枚举，通过into_inner()获取guard，而非手动调用new
+        Err(poisoned) => {
             // 发生 panic 后，仍尝试获取锁（安全降级）
-            Ok(guard)
+            Ok(poisoned.into_inner())
         }
     }
 }

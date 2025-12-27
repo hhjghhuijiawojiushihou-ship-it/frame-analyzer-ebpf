@@ -1,7 +1,7 @@
 /*
 * Copyright (c) 2024 shadow3aaa@gitbub.com
 *
-* This file is part of frame-analyzer-ebpf.
+* This program is part of frame-analyzer-ebpf.
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -20,7 +20,7 @@
 use std::{
     env,
     fs,
-    path::{Path, PathBuf},
+    path::Path, // 修复：删除未使用的PathBuf导入
     process::Command,
 };
 
@@ -47,14 +47,13 @@ fn copy_ebpf_file() -> Result<()> {
     let out_dir = env::var("OUT_DIR")?;
     let out_dir = Path::new(&out_dir);
     let target_dir = out_dir.join("ebpf_target");
-    let target_dir_str = target_dir.to_str().unwrap();
+    let _target_dir_str = target_dir.to_str().unwrap(); // 修复：重命名为_target_dir_str，消除未使用警告
 
     // 创建目标目录（兼容原代码的输出结构）
     #[cfg(debug_assertions)]
     let prefix_dir = &target_dir.join("bpfel-unknown-none").join("debug");
     #[cfg(not(debug_assertions))]
     let prefix_dir = &target_dir.join("bpfel-unknown-none").join("release");
-    
     fs::create_dir_all(prefix_dir)?;
 
     // 拷贝指定的eBPF文件到输出目录
@@ -77,7 +76,7 @@ fn install_ebpf_linker() -> Result<()> {
     let out_dir = env::var("OUT_DIR")?;
     let out_dir = Path::new(&out_dir);
     let target_dir = out_dir.join("temp_target");
-    let target_dir_str = target_dir.to_str().unwrap();
+    let _target_dir_str = target_dir.to_str().unwrap(); // 修复：重命名为_target_dir_str，消除未使用警告
 
     Command::new("cargo")
         .args([
@@ -85,9 +84,9 @@ fn install_ebpf_linker() -> Result<()> {
             "bpf-linker",
             "--force",
             "--root",
-            target_dir_str,
+            _target_dir_str, // 使用重命名后的变量
             "--target-dir",
-            target_dir_str,
+            _target_dir_str, // 使用重命名后的变量
         ])
         .status()?;
 
@@ -101,7 +100,7 @@ fn build_ebpf() -> Result<()> {
     let out_dir = env::var("OUT_DIR")?;
     let out_dir = Path::new(&out_dir);
     let target_dir = out_dir.join("ebpf_target");
-    let target_dir_str = target_dir.to_str().unwrap();
+    let _target_dir_str = target_dir.to_str().unwrap(); // 修复：重命名为_target_dir_str，消除未使用警告
     let bin = out_dir.join("temp_target").join("bin");
     let bin = bin.to_str().unwrap();
 
@@ -115,7 +114,7 @@ fn build_ebpf() -> Result<()> {
         "-Z",
         "build-std=core",
         "--target-dir",
-        target_dir_str,
+        _target_dir_str, // 使用重命名后的变量
     ];
 
     if project_path.exists() {
@@ -140,7 +139,7 @@ fn build_ebpf() -> Result<()> {
             .args(["install", "frame-analyzer-ebpf"])
             .arg("--force")
             .args(ebpf_args)
-            .args(["--root", target_dir_str])
+            .args(["--root", _target_dir_str]) // 使用重命名后的变量
             .env_remove("RUSTUP_TOOLCHAIN")
             .env("PATH", add_path(bin)?)
             .status()?;
