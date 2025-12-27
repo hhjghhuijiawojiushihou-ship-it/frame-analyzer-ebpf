@@ -1,21 +1,22 @@
 /*
- * Copyright (c) 2024 shadow3aaa@gitbub.com
- *
- * This file is part of frame-analyzer-ebpf.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
+* Copyright (c) 2024 shadow3aaa@gitbub.com
+*
+* This file is part of frame-analyzer-ebpf.
+*
+* This program is free software: you can redistribute it and/or modify
+* it under the terms of the GNU General Public License as published by
+* the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #![warn(clippy::nursery, clippy::all, clippy::pedantic)]
 #![allow(
     clippy::module_name_repetitions,
@@ -23,6 +24,7 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation
 )]
+
 //! # frame-analyzer
 //!
 //! - This crate is used to monitor the frametime of the target application on the android device
@@ -36,20 +38,20 @@
 //!
 //! ```
 //! use std::sync::{
-//!   atomic::{AtomicBool, Ordering},
-//!   Arc,
+//! atomic::{AtomicBool, Ordering},
+//! Arc,
 //! };
 //!
 //! use frame_analyzer::Analyzer;
 //!
 //! # fn main() {
-//! #   let _ = try_main(); // ignore error
+//! # let _ = try_main(); // ignore error
 //! # }
 //! #
 //! # fn try_main() -> anyhow::Result<()> {
-//! #   let app_pid_a = 1;
-//! #   let app_pid_b = 2;
-//! #   let app_pid_c = 3;
+//! # let app_pid_a = 1;
+//! # let app_pid_b = 2;
+//! # let app_pid_c = 3;
 //! let mut analyzer = Analyzer::new()?;
 //! analyzer.attach_app(app_pid_a)?;
 //! analyzer.attach_app(app_pid_b)?;
@@ -58,23 +60,26 @@
 //! let running = Arc::new(AtomicBool::new(true));
 //!
 //! {
-//!     let running = running.clone();
-//!     ctrlc::set_handler(move || {
-//!         running.store(false, Ordering::Release);
-//!     })?;
+//! let running = running.clone();
+//! ctrlc::set_handler(move || {
+//! running.store(false, Ordering::Release);
+//! })?;
 //! }
 //! #
-//! #   running.store(false, Ordering::Release); // avoid dead-loop in test
+//! # running.store(false, Ordering::Release); // avoid dead-loop in test
 //! #
 //! while running.load(Ordering::Acquire) {
-//!     if let Some((pid, frametime)) = analyzer.recv() {
-//!         println!("process: {pid}, frametime: {frametime:?}");
-//!     }
+//! if let Some((pid, frametime)) = analyzer.recv() {
+//! println!("process: {pid}, frametime: {frametime:?}");
+//! }
 //! }
 //! #
-//! #   Ok(())
+//! # Ok(())
 //! # }
 //! ```
+
+// 关键修改：公开导出C接口模块，确保编译时包含该代码
+pub mod c_api;
 mod analyze_target;
 mod ebpf;
 mod error;
@@ -107,7 +112,7 @@ const EVENT_MAX: usize = 1024;
 /// #
 /// #
 /// # fn main() {
-/// #   let _ = try_main();
+/// # let _ = try_main();
 /// # }
 /// #
 /// # fn try_main() -> anyhow::Result<()> {
@@ -116,9 +121,9 @@ const EVENT_MAX: usize = 1024;
 /// analyzer.attach_app(app_pid)?;
 ///
 /// if let Some((pid, frametime)) = analyzer.recv() {
-///     println!("process: {pid}, frametime: {frametime:?}");
+/// println!("process: {pid}, frametime: {frametime:?}");
 /// }
-/// #   Ok(())
+/// # Ok(())
 /// # }
 /// ```
 pub struct Analyzer {
@@ -141,12 +146,12 @@ impl Analyzer {
     ///
     /// #
     /// # fn main() {
-    /// #   let _ = try_main();
+    /// # let _ = try_main();
     /// # }
     /// #
     /// # fn try_main() -> anyhow::Result<()> {
     /// let analyzer = Analyzer::new()?;
-    /// #   Ok(())
+    /// # Ok(())
     /// # }
     /// ```
     pub fn new() -> Result<Self> {
@@ -174,14 +179,14 @@ impl Analyzer {
     /// # use frame_analyzer::Analyzer;
     /// #
     /// # fn main() {
-    /// #   let _ = try_main();
+    /// # let _ = try_main();
     /// # }
     /// #
     /// # fn try_main() -> anyhow::Result<()> {
-    /// #   let mut analyzer = Analyzer::new()?;
-    /// #   let app_pid = 2;
+    /// # let mut analyzer = Analyzer::new()?;
+    /// # let app_pid = 2;
     /// analyzer.attach_app(app_pid)?;
-    /// #   Ok(())
+    /// # Ok(())
     /// # }
     /// ```
     pub fn attach_app(&mut self, pid: Pid) -> Result<()> {
@@ -209,16 +214,16 @@ impl Analyzer {
     /// #
     /// #
     /// # fn main() {
-    /// #   let _ = try_main();
+    /// # let _ = try_main();
     /// # }
     /// #
     /// # fn try_main() -> anyhow::Result<()> {
     /// let mut analyzer = Analyzer::new()?;
-    /// #   let app_pid = 2;
+    /// # let app_pid = 2;
     /// analyzer.attach_app(app_pid)?;
     /// // Do some useful work for awhile
     /// analyzer.detach_app(app_pid)?; // if you don't detach here, analyzer will auto detach it when itself go dropped
-    /// #   Ok(())
+    /// # Ok(())
     /// # }
     /// ```
     pub fn detach_app(&mut self, pid: Pid) -> Result<()> {
@@ -242,16 +247,16 @@ impl Analyzer {
     /// #
     /// #
     /// # fn main() {
-    /// #   let _ = try_main();
+    /// # let _ = try_main();
     /// # }
     /// #
     /// # fn try_main() -> anyhow::Result<()> {
     /// let mut analyzer = Analyzer::new()?;
-    /// #   let app_pid = 2;
+    /// # let app_pid = 2;
     /// analyzer.attach_app(app_pid);
     /// // Do some useful work for awhile
     /// analyzer.detach_apps(); // if you don't detach here, analyzer will auto detach it when itself go dropped
-    /// #   Ok(())
+    /// # Ok(())
     /// # }
     /// ```
     pub fn detach_apps(&mut self) {
@@ -267,21 +272,21 @@ impl Analyzer {
     /// # use frame_analyzer::Analyzer;
     /// #
     /// # fn main() {
-    /// #   let _ = try_main();
+    /// # let _ = try_main();
     /// # }
     /// #
     /// # fn try_main() -> anyhow::Result<()> {
-    /// #   let mut analyzer = Analyzer::new()?;
-    /// #   let app_pid = 2;
+    /// # let mut analyzer = Analyzer::new()?;
+    /// # let app_pid = 2;
     /// analyzer.attach_app(app_pid)?;
     ///
     /// if let Some((pid, frametime)) = analyzer.recv() {
-    ///     println!("process: {pid}, frametime: {frametime:?}");
-    ///     // and use it for further analyze...
+    /// println!("process: {pid}, frametime: {frametime:?}");
+    /// // and use it for further analyze...
     /// }
     ///
     /// analyzer.detach_app(app_pid)?; // if you don't detach here, analyzer will auto detach it when itself go dropped
-    /// #   Ok(())
+    /// # Ok(())
     /// # }
     /// ```
     pub fn recv(&mut self) -> Option<(Pid, Duration)> {
@@ -311,21 +316,21 @@ impl Analyzer {
     /// # use frame_analyzer::Analyzer;
     ///
     /// # fn main() {
-    /// #   let _ = try_main();
+    /// # let _ = try_main();
     /// # }
     /// #
     /// # fn try_main() -> anyhow::Result<()> {
-    /// #   let mut analyzer = Analyzer::new()?;
-    /// #   let app_pid = 2;
+    /// # let mut analyzer = Analyzer::new()?;
+    /// # let app_pid = 2;
     /// analyzer.attach_app(app_pid)?;
     ///
     /// if let Some((pid, frametime)) = analyzer.recv_timeout(Duration::from_secs(1)) {
-    ///     println!("process: {pid}, frametime: {frametime:?}");
-    ///     // and use it for further analyze...
+    /// println!("process: {pid}, frametime: {frametime:?}");
+    /// // and use it for further analyze...
     /// }
     ///
     /// analyzer.detach_app(app_pid)?; // if you don't detach here, analyzer will auto detach it when itself go dropped
-    /// #   Ok(())
+    /// # Ok(())
     /// # }
     /// ```
     pub fn recv_timeout(&mut self, time: Duration) -> Option<(Pid, Duration)> {

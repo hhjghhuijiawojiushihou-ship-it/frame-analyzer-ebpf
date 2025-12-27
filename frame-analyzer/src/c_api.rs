@@ -11,7 +11,8 @@ use crate::{Analyzer, AnalyzerError, Pid};
 static GLOBAL_ANALYZER: OnceLock<Arc<Mutex<Analyzer>>> = OnceLock::new();
 
 /// 辅助函数：安全锁定 Mutex，处理 poisoned 情况
-fn lock_analyzer(analyzer: &Arc<Mutex<Analyzer>>) -> Result<impl std::ops::DerefMut<Target = Analyzer>, c_int> {
+/// 修复：显式指定返回类型为 MutexGuard，避免 impl 匿名类型导致的编译错误
+fn lock_analyzer(analyzer: &Arc<Mutex<Analyzer>>) -> Result<std::sync::MutexGuard<'_, Analyzer>, c_int> {
     match analyzer.lock() {
         Ok(guard) => Ok(guard),
         Err(PoisonError::new(guard)) => {
@@ -23,8 +24,8 @@ fn lock_analyzer(analyzer: &Arc<Mutex<Analyzer>>) -> Result<impl std::ops::Deref
 
 /// C 接口：初始化 Analyzer（仅需调用一次）
 /// 返回值：0=成功，-1=失败（已初始化返回 0）
-#[no_mangle]
-pub extern "C" fn frame_analyzer_init() -> c_int {
+#[unsafe(no_mangle)] // 官方指定：替换#[no_mangle]为#[unsafe(no_mangle)]
+pub extern "C" fn frame_analyzer_init() -> c_int { // 移除函数上的unsafe关键字
     // 若已初始化，直接返回成功
     if GLOBAL_ANALYZER.get().is_some() {
         return 0;
@@ -36,17 +37,18 @@ pub extern "C" fn frame_analyzer_init() -> c_int {
         Err(_) => return -1,
     };
 
-    GLOBAL_ANALYZER
-        .set(Arc::new(Mutex::new(analyzer)))
-        .map_err(|_| -1)
-        .unwrap_or(0)
+    // 修复：用 match 替换链式调用，解决类型不匹配（E0308）
+    match GLOBAL_ANALYZER.set(Arc::new(Mutex::new(analyzer))) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
 }
 
 /// C 接口：绑定目标 PID（对齐原有 attach_app）
 /// 参数：pid=目标进程 PID
 /// 返回值：0=成功，-1=失败（未初始化/PID 无效/无权限）
-#[no_mangle]
-pub extern "C" fn frame_analyzer_attach(pid: c_int) -> c_int {
+#[unsafe(no_mangle)] // 官方指定语法
+pub extern "C" fn frame_analyzer_attach(pid: c_int) -> c_int { // 移除函数上的unsafe关键字
     // 检查是否已初始化
     let analyzer = match GLOBAL_ANALYZER.get() {
         Some(a) => a,
@@ -69,8 +71,8 @@ pub extern "C" fn frame_analyzer_attach(pid: c_int) -> c_int {
 /// C 接口：执行一次，返回一次实时帧率（完全对齐原有逻辑）
 /// 参数：pid=目标进程 PID，timeout_ms=超时时间（毫秒，0=非阻塞）
 /// 返回值：帧率（fps），-1.0=无数据/失败/未初始化/锁定失败
-#[no_mangle]
-pub extern "C" fn frame_analyzer_get_fps(pid: c_int, timeout_ms: c_int) -> c_double {
+#[unsafe(no_mangle)] // 官方指定语法
+pub extern "C" fn frame_analyzer_get_fps(pid: c_int, timeout_ms: c_int) -> c_double { // 移除函数上的unsafe关键字
     let pid = pid as Pid;
     let timeout = Duration::from_millis(timeout_ms as u64);
 
@@ -104,8 +106,8 @@ pub extern "C" fn frame_analyzer_get_fps(pid: c_int, timeout_ms: c_int) -> c_dou
 /// C 接口：解绑目标 PID（对齐原有 detach_app）
 /// 参数：pid=目标进程 PID
 /// 返回值：0=成功，-1=失败（未初始化/锁定失败）
-#[no_mangle]
-pub extern "C" fn frame_analyzer_detach(pid: c_int) -> c_int {
+#[unsafe(no_mangle)] // 官方指定语法
+pub extern "C" fn frame_analyzer_detach(pid: c_int) -> c_int { // 移除函数上的unsafe关键字
     // 检查是否已初始化
     let analyzer = match GLOBAL_ANALYZER.get() {
         Some(a) => a,
@@ -127,8 +129,8 @@ pub extern "C" fn frame_analyzer_detach(pid: c_int) -> c_int {
 
 /// C 接口：销毁资源（程序退出时调用）
 /// 返回值：0=成功（无论是否初始化）
-#[no_mangle]
-pub extern "C" fn frame_analyzer_destroy() -> c_int {
+#[unsafe(no_mangle)] // 官方指定语法
+pub extern "C" fn frame_analyzer_destroy() -> c_int { // 移除函数上的unsafe关键字
     if let Some(analyzer) = GLOBAL_ANALYZER.get() {
         let mut analyzer = match lock_analyzer(analyzer) {
             Ok(a) => a,
