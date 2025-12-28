@@ -13,8 +13,8 @@ license.workspace = true
 name = "frame_analyzer"
 path = "src/lib.rs"
 crate-type = [
-    "staticlib",  # 核心：生成C/C++可调用的静态库
-    "rlib"        # 保留：不影响原有Rust项目依赖使用
+    "staticlib",
+    "rlib"
 ]
 
 [dependencies]
@@ -26,9 +26,7 @@ thiserror = "2.0.11"
 ctor = "0.4.0"
 ctrlc = "3.4.4"
 mio = { version = "1.0.3", features = ["os-ext"] }
-# 新增日志依赖（用于验证EBPF加载状态）
-log = "0.4.21"
-env_logger = "0.10.1"
 
 [build-dependencies]
 anyhow = "1.0.96"
+

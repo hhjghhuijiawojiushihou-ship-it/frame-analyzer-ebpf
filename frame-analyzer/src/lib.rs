@@ -1,24 +1,21 @@
 /*
- * Copyright (c) 2024 shadow3aaa@gitbub.com
- *
- * This file is part of frame-analyzer-ebpf.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <https://www.gnu.org/licenses/>.
- */
+* Copyright (c) 2024 shadow3aaa@gitbub.com
+*
+* This program is free software: you can redistribute it and/or modify
+* it under the terms of the GNU General Public License as published by
+* the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #![warn(clippy::nursery, clippy::all, clippy::pedantic)]
-
 #![allow(
     clippy::module_name_repetitions,
     clippy::cast_possible_wrap,
@@ -26,63 +23,6 @@
     clippy::cast_possible_truncation
 )]
 
-//! # frame-analyzer
-//!
-//! - This crate is used to monitor the frametime of the target application on the android device
-//! - Based on the EBPF and UPROBE implementations, you may need higher privileges (e.g. root) to use this crate properly
-//! - This IS NOT a bin crate, it uses some tricks (see [source](https://github.com/shadow3aaa/frame-analyzer-ebpf?tab=readme-ov-file)) to get it to work like a normal lib crate, even though it includes an EBPF program
-//! - Only 64-bit devices & apps are supported!
-//!
-//! # Examples
-//!
-//! Simple frametime analyzer, print pid & frametime on the screen
-//!
-//! ```
-//! use std::sync::{
-//! atomic::{AtomicBool, Ordering},
-//! Arc,
-//! };
-//!
-//! use frame_analyzer::Analyzer;
-//!
-//! # fn main() {
-//! # let _ = try_main(); // ignore error
-//! # }
-//! #
-//! # fn try_main() -> anyhow::Result<()> {
-//! # let app_pid_a = 1;
-//! # let app_pid_b = 2;
-//! # let app_pid_c = 3;
-//! let mut analyzer = Analyzer::new()?;
-//! analyzer.attach_app(app_pid_a)?;
-//! analyzer.attach_app(app_pid_b)?;
-//! analyzer.attach_app(app_pid_c)?; // muti-apps are supported
-//!
-//! let running = Arc::new(AtomicBool::new(true));
-//!
-//! {
-//! let running = running.clone();
-//! ctrlc::set_handler(move || {
-//! running.store(false, Ordering::Release);
-//! })?;
-//! }
-//! #
-//! # running.store(false, Ordering::Release); // avoid dead-loop in test
-//! #
-//! while running.load(Ordering::Acquire) {
-//! if let Some((pid, frametime)) = analyzer.recv() {
-//! println!("process: {pid}, frametime: {frametime:?}");
-//! }
-//! }
-//! #
-//! # Ok(())
-//! # }
-//! ```
-
-// 关键修改1：导入日志模块（用于验证EBPF加载状态）
-use log::{info, debug};
-
-// 关键修改2：公开导出C接口模块，确保编译时包含该代码
 pub mod c_api;
 
 mod analyze_target;
@@ -103,34 +43,10 @@ pub use error::AnalyzerError;
 use error::Result;
 use uprobe::UprobeHandler;
 
-/// The pid of the target application
 pub type Pid = i32;
 
 const EVENT_MAX: usize = 1024;
 
-/// The Frame Analyzer
-///
-/// # Examples
-///
-/// ```
-/// # use frame_analyzer::Analyzer;
-/// #
-/// #
-/// # fn main() {
-/// # let _ = try_main();
-/// # }
-/// #
-/// # fn try_main() -> anyhow::Result<()> {
-/// # let app_pid = 1;
-/// let mut analyzer = Analyzer::new()?;
-/// analyzer.attach_app(app_pid)?;
-///
-/// if let Some((pid, frametime)) = analyzer.recv() {
-/// println!("process: {pid}, frametime: {frametime:?}");
-/// }
-/// # Ok(())
-/// # }
-/// ```
 pub struct Analyzer {
     poll: Option<Poll>,
     map: HashMap<Pid, AnalyzeTarget>,
@@ -138,32 +54,7 @@ pub struct Analyzer {
 }
 
 impl Analyzer {
-    /// Create a new analyzer
-    ///
-    /// # Errors
-    ///
-    /// This function will make a syscall to the operating system to create the system selector. If this syscall fails, `Analyzer::new` will return with the error.
-    /// See [mio Poll](https://docs.rs/mio/0.8.11/mio/poll/struct.Poll.html) docs for more details.
-    ///
-    /// # Examples
-    /// ```
-    /// use frame_analyzer::Analyzer;
-    ///
-    /// #
-    /// # fn main() {
-    /// # let _ = try_main();
-    /// # }
-    /// #
-    /// # fn try_main() -> anyhow::Result<()> {
-    /// let analyzer = Analyzer::new()?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn new() -> Result<Self> {
-        // 关键修改3：初始化日志（仅调试用，不影响性能和功能）
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-        info!("✅ Analyzer 初始化完成，准备加载 EBPF 程序");
-
         let poll = None;
         let map = HashMap::new();
         let buffer = VecDeque::with_capacity(EVENT_MAX);
@@ -171,76 +62,20 @@ impl Analyzer {
         Ok(Self { poll, map, buffer })
     }
 
-    /// Attach the Analyzer to the target application
-    /// If attach the same application multiple times, `Analyzer::attach_app` will directly return `Ok` without attaching again
-    ///
-    /// # Errors
-    ///
-    /// `Analyzer::attach_app` will return an error in these cases
-    ///
-    /// - Target application is not 64-bit
-    /// - Target application is not using /system/lib64/libgui.so (this will only happen if you use this crate on a non-Android platform)
-    /// - Current user does not have enough permissions to load the built-in ebpf program into the kernel, in which case it will return `BpfProgramError`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use frame_analyzer::Analyzer;
-    /// #
-    /// # fn main() {
-    /// # let _ = try_main();
-    /// # }
-    /// #
-    /// # fn try_main() -> anyhow::Result<()> {
-    /// # let mut analyzer = Analyzer::new()?;
-    /// # let app_pid = 2;
-    /// analyzer.attach_app(app_pid)?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn attach_app(&mut self, pid: Pid) -> Result<()> {
-        if self.contains(pid) {
-            info!("⚠️ 目标 PID: {} 已挂载，无需重复操作", pid);
+        if self.map.contains_key(&pid) {
             return Ok(());
         }
 
-        info!("📌 开始为 PID: {} 挂载 Uprobe 探针", pid);
         let uprobe = UprobeHandler::attach_app(pid)?;
         self.map.insert(pid, AnalyzeTarget::new(uprobe));
         self.register_poll()?;
 
-        info!("🎉 PID: {} 探针挂载成功，已注册事件监听", pid);
         Ok(())
     }
 
-    /// Detach the Analyzer from the target application
-    ///
-    /// # Errors
-    ///
-    /// `Analyzer::detach_app` returns `AppNotFound` if the target app is not already attached by `Analyzer::attach`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use frame_analyzer::Analyzer;
-    /// #
-    /// #
-    /// # fn main() {
-    /// # let _ = try_main();
-    /// # }
-    /// #
-    /// # fn try_main() -> anyhow::Result<()> {
-    /// let mut analyzer = Analyzer::new()?;
-    /// # let app_pid = 2;
-    /// analyzer.attach_app(app_pid)?;
-    /// // Do some useful work for awhile
-    /// analyzer.detach_app(app_pid)?; // if you don't detach here, analyzer will auto detach it when itself go dropped
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn detach_app(&mut self, pid: Pid) -> Result<()> {
-        if !self.contains(pid) {
-            info!("⚠️ 目标 PID: {} 未挂载，无需解绑", pid);
+        if !self.map.contains_key(&pid) {
             return Ok(());
         }
 
@@ -248,71 +83,20 @@ impl Analyzer {
         self.buffer.retain(|pid_event| *pid_event != pid);
         self.register_poll()?;
 
-        info!("✅ PID: {} 已成功解绑探针", pid);
         Ok(())
     }
 
-    /// Detach the Analyzer from all attached apps
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use frame_analyzer::Analyzer;
-    /// #
-    /// #
-    /// # fn main() {
-    /// # let _ = try_main();
-    /// # }
-    /// #
-    /// # fn try_main() -> anyhow::Result<()> {
-    /// let mut analyzer = Analyzer::new()?;
-    /// # let app_pid = 2;
-    /// analyzer.attach_app(app_pid);
-    /// // Do some useful work for awhile
-    /// analyzer.detach_apps(); // if you don't detach here, analyzer will auto detach it when itself go dropped
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn detach_apps(&mut self) {
-        let count = self.map.len();
         self.map.clear();
         self.buffer.clear();
-        info!("✅ 已解绑所有挂载的探针（共 {} 个进程）", count);
     }
 
-    /// Attempts to wait for a frametime value on this analyzer
-    /// `Analyzer::recv` will always block the current thread if there is no data available
-    ///
-    /// # Examples
-    /// ```
-    /// # use frame_analyzer::Analyzer;
-    /// #
-    /// # fn main() {
-    /// # let _ = try_main();
-    /// # }
-    /// #
-    /// # fn try_main() -> anyhow::Result<()> {
-    /// # let mut analyzer = Analyzer::new()?;
-    /// # let app_pid = 2;
-    /// analyzer.attach_app(app_pid)?;
-    ///
-    /// if let Some((pid, frametime)) = analyzer.recv() {
-    /// println!("process: {pid}, frametime: {frametime:?}");
-    /// // and use it for further analyze...
-    /// }
-    ///
-    /// analyzer.detach_app(app_pid)?; // if you don't detach here, analyzer will auto detach it when itself go dropped
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn recv(&mut self) -> Option<(Pid, Duration)> {
         if self.buffer.is_empty() {
             if let Some(ref mut poll) = self.poll {
                 let mut events = Events::with_capacity(EVENT_MAX);
                 let _ = poll.poll(&mut events, None);
 
-                // 核心修改：替换 events.len() 为 events.iter().count()
-                debug!("📥 收到 {} 个事件，添加到缓冲区", events.iter().count());
                 self.buffer.extend(events.iter().map(event_to_pid));
             }
 
@@ -322,44 +106,15 @@ impl Analyzer {
         let pid = self.buffer.pop_front()?;
         let frametime = self.map.get_mut(&pid)?.update()?;
 
-        debug!("📊 PID: {} 帧数据：{:?}", pid, frametime);
         Some((pid, frametime))
     }
 
-    /// Attempts to wait for a value on this receiver, returning `None` if it waits more than timeout
-    /// `Analyzer::recv_timeout` will always block the current thread if there is no data available
-    ///
-    /// # Examples
-    /// ```
-    /// use std::time::Duration;
-    /// # use frame_analyzer::Analyzer;
-    ///
-    /// # fn main() {
-    /// # let _ = try_main();
-    /// # }
-    /// #
-    /// # fn try_main() -> anyhow::Result<()> {
-    /// # let mut analyzer = Analyzer::new()?;
-    /// # let app_pid = 2;
-    /// analyzer.attach_app(app_pid)?;
-    ///
-    /// if let Some((pid, frametime)) = analyzer.recv_timeout(Duration::from_secs(1)) {
-    /// println!("process: {pid}, frametime: {frametime:?}");
-    /// // and use it for further analyze...
-    /// }
-    ///
-    /// analyzer.detach_app(app_pid)?; // if you don't detach here, analyzer will auto detach it when itself go dropped
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn recv_timeout(&mut self, time: Duration) -> Option<(Pid, Duration)> {
         if self.buffer.is_empty() {
             if let Some(ref mut poll) = self.poll {
                 let mut events = Events::with_capacity(EVENT_MAX);
                 let _ = poll.poll(&mut events, Some(time));
 
-                // 核心修改：替换 events.len() 为 events.iter().count()
-                debug!("📥 超时 {}ms 内收到 {} 个事件", time.as_millis(), events.iter().count());
                 self.buffer.extend(events.iter().map(event_to_pid));
             }
 
@@ -369,23 +124,24 @@ impl Analyzer {
         let pid = self.buffer.pop_front()?;
         let frametime = self.map.get_mut(&pid)?.update()?;
 
-        debug!("📊 PID: {} 帧数据：{:?}", pid, frametime);
         Some((pid, frametime))
     }
 
-    /// Whether the target application has been attached by the `Analyzer`
     #[must_use]
     pub fn contains(&self, app: Pid) -> bool {
         self.map.contains_key(&app)
     }
 
-    /// An iterator visiting all attched pids in arbitrary order
     pub fn pids(&self) -> impl Iterator<Item = Pid> + '_ {
         self.map.keys().copied()
     }
 
     fn register_poll(&mut self) -> Result<()> {
-        let poll = Poll::new()?;
+        let poll = if let Some(existing) = self.poll.take() {
+            existing
+        } else {
+            Poll::new()?
+        };
 
         for (pid, handler) in &mut self.map {
             poll.registry().register(
@@ -393,7 +149,6 @@ impl Analyzer {
                 Token(*pid as usize),
                 Interest::READABLE,
             )?;
-            debug!("🔗 PID: {} 已注册事件监听", pid);
         }
 
         self.poll = Some(poll);
@@ -402,7 +157,6 @@ impl Analyzer {
 }
 
 fn event_to_pid(event: &Event) -> Pid {
-    let token = event.token();
-    let Token(pid) = token;
+    let Token(pid) = event.token();
     pid as Pid
 }

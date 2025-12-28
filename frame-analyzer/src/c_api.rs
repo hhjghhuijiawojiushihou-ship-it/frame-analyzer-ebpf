@@ -1,9 +1,26 @@
+/*
+* Copyright (c) 2024 shadow3aaa@gitbub.com
+*
+* This program is free software: you can redistribute it and/or modify
+* it under the terms of the GNU General Public License as published by
+* the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 use std::{
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
-    result::Result, // 导入标准Result类型
 };
-use libc::{c_int, c_uint}; // 移除未使用的c_ulonglong
+
+use libc::{c_int, c_uint};
 
 use crate::{Analyzer, Pid};
 
@@ -15,11 +32,8 @@ pub struct FrameTime {
     pub nanos: c_uint,
 }
 
-fn lock_analyzer(analyzer: &Arc<Mutex<Analyzer>>) -> Result<std::sync::MutexGuard<'_, Analyzer>, c_int> {
-    match analyzer.lock() {
-        Ok(guard) => Ok(guard),
-        Err(poisoned) => Ok(poisoned.into_inner()),
-    }
+fn lock_analyzer(analyzer: &Arc<Mutex<Analyzer>>) -> std::sync::MutexGuard<'_, Analyzer> {
+    analyzer.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[unsafe(no_mangle)]
@@ -31,10 +45,7 @@ pub extern "C" fn frame_analyzer_init() -> c_int {
         Ok(a) => a,
         Err(_) => return -1,
     };
-    match GLOBAL_ANALYZER.set(Arc::new(Mutex::new(analyzer))) {
-        Ok(_) => 0,
-        Err(_) => -1,
-    }
+    GLOBAL_ANALYZER.set(Arc::new(Mutex::new(analyzer))).map_or(-1, |_| 0)
 }
 
 #[unsafe(no_mangle)]
@@ -44,14 +55,8 @@ pub extern "C" fn frame_analyzer_attach(pid: c_int) -> c_int {
         None => return -1,
     };
     let pid = pid as Pid;
-    let mut analyzer = match lock_analyzer(analyzer) {
-        Ok(a) => a,
-        Err(_) => return -1,
-    };
-    match analyzer.attach_app(pid) {
-        Ok(_) => 0,
-        Err(_) => -1,
-    }
+    let mut analyzer = lock_analyzer(analyzer);
+    analyzer.attach_app(pid).map_or(-1, |_| 0)
 }
 
 #[unsafe(no_mangle)]
@@ -71,11 +76,7 @@ pub extern "C" fn frame_analyzer_get_frametime(
         Some(a) => a,
         None => return -1,
     };
-
-    let mut analyzer = match lock_analyzer(analyzer) {
-        Ok(a) => a,
-        Err(_) => return -1,
-    };
+    let mut analyzer = lock_analyzer(analyzer);
 
     match analyzer.recv_timeout(timeout) {
         Some((recv_pid, frametime)) if recv_pid == pid => {
@@ -83,7 +84,6 @@ pub extern "C" fn frame_analyzer_get_frametime(
                 secs: frametime.as_secs() as c_uint,
                 nanos: frametime.subsec_nanos() as c_uint,
             };
-            // 核心修复：将原始指针解引用放入unsafe块
             unsafe {
                 *out_frametime = ft;
             }
@@ -100,23 +100,14 @@ pub extern "C" fn frame_analyzer_detach(pid: c_int) -> c_int {
         None => return -1,
     };
     let pid = pid as Pid;
-    let mut analyzer = match lock_analyzer(analyzer) {
-        Ok(a) => a,
-        Err(_) => return -1,
-    };
-    match analyzer.detach_app(pid) {
-        Ok(_) => 0,
-        Err(_) => -1,
-    }
+    let mut analyzer = lock_analyzer(analyzer);
+    analyzer.detach_app(pid).map_or(-1, |_| 0)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn frame_analyzer_destroy() -> c_int {
     if let Some(analyzer) = GLOBAL_ANALYZER.get() {
-        let mut analyzer = match lock_analyzer(analyzer) {
-            Ok(a) => a,
-            Err(_) => return 0,
-        };
+        let mut analyzer = lock_analyzer(analyzer);
         analyzer.detach_apps();
     }
     0
