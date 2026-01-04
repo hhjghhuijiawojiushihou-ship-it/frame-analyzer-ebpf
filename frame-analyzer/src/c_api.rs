@@ -16,14 +16,15 @@
 */
 
 use std::{
-    sync::{Arc, Mutex, Condvar, LazyLock},
+    sync::{Arc, Mutex, Condvar, LazyLock, atomic::{AtomicBool, Ordering}},
     time::Duration,
     os::unix::io::RawFd,
     thread,
     collections::VecDeque,
+    panic::{catch_unwind, AssertUnwindSafe},
 };
 
-use libc::{c_int, c_uint, c_void, eventfd, EFD_NONBLOCK, write, close};
+use libc::{c_int, c_uint, c_void, eventfd, EFD_NONBLOCK, EFD_CLOEXEC, write, close, read};
 
 use crate::{Analyzer, Pid};
 
@@ -31,45 +32,49 @@ use crate::{Analyzer, Pid};
 struct FrameBuffer {
     data: Mutex<VecDeque<(Pid, Duration)>>,
     cond: Condvar,
-    lock: Mutex<()>,
+    running: AtomicBool,
 }
 
 impl FrameBuffer {
-    /// 初始化帧缓冲区
     fn new() -> Self {
         Self {
             data: Mutex::new(VecDeque::with_capacity(1024)),
             cond: Condvar::new(),
-            lock: Mutex::new(()),
+            running: AtomicBool::new(true),
         }
     }
 
-    /// 写入帧数据并触发通知
     fn push(&self, pid: Pid, frametime: Duration) {
-        let _lock = self.lock.lock().unwrap(); // 下划线标记未使用变量
+        if !self.running.load(Ordering::Acquire) {
+            return;
+        }
         let mut data = self.data.lock().unwrap();
         data.push_back((pid, frametime));
         self.cond.notify_one();
     }
 
-    /// 读取指定PID的帧数据（带超时）
     fn pop(&self, pid: Pid, timeout: Duration) -> Option<Duration> {
-        let mut lock = self.lock.lock().unwrap(); // 保留mut，后续会被修改
-        let _lock = self.cond.wait_timeout(lock, timeout).unwrap().0; // 下划线标记未使用变量
-        
-        let mut data = self.data.lock().unwrap();
-        if let Some(pos) = data.iter().position(|(p, _)| *p == pid) {
-            let (_, ft) = data.remove(pos).unwrap();
-            Some(ft)
-        } else {
-            None
+        if !self.running.load(Ordering::Acquire) {
+            return None;
         }
+        let data = self.data.lock().unwrap();
+        let (mut data, _) = self.cond.wait_timeout(data, timeout).unwrap();
+        data.iter().position(|(p, _)| *p == pid).map(|pos| {
+            let (_, ft) = data.remove(pos).unwrap();
+            ft
+        })
+    }
+
+    fn stop(&self) {
+        self.running.store(false, Ordering::Release);
+        self.cond.notify_all();
     }
 }
 
-// 全局资源（延迟初始化避免静态变量调用非const函数）
+// 全局资源
+static RUNNING: AtomicBool = AtomicBool::new(false);
 static GLOBAL_ANALYZER: Mutex<Option<Arc<Mutex<Analyzer>>>> = Mutex::new(None);
-static FRAME_BUFFER: LazyLock<Arc<FrameBuffer>> = LazyLock::new(|| Arc::new(FrameBuffer::new())); // 修正第72行的语法错误
+static FRAME_BUFFER: LazyLock<Arc<FrameBuffer>> = LazyLock::new(|| Arc::new(FrameBuffer::new()));
 static NOTIFY_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 static NOTIFY_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
 
@@ -80,35 +85,45 @@ pub struct FrameTime {
     pub nanos: c_uint,
 }
 
+/// 简化eventfd读取：仅清空一次，无循环无返回值
+fn read_eventfd(fd: RawFd) {
+    let mut val = 0u64;
+    unsafe { read(fd, &mut val as *mut u64 as *mut c_void, 8) };
+}
+
 /// 初始化EBPF和全局资源
 #[unsafe(no_mangle)]
 pub extern "C" fn frame_analyzer_init() -> c_int {
+    if RUNNING.load(Ordering::Acquire) {
+        return 0;
+    }
+
     let mut global = GLOBAL_ANALYZER.lock().unwrap();
     if global.is_some() {
         return 0;
     }
 
     // 初始化Analyzer
-    let analyzer = match Analyzer::new() {
-        Ok(a) => a,
-        Err(_) => return -1,
+    let analyzer = match catch_unwind(|| Analyzer::new()) {
+        Ok(Ok(a)) => a,
+        _ => return -1,
     };
 
-    // 创建eventfd（非阻塞模式）
-    let efd = unsafe { eventfd(0, EFD_NONBLOCK) };
+    // 创建eventfd
+    let efd = unsafe { eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) };
     if efd < 0 {
         return -1;
     }
 
-    // 共享资源给后台线程
+    // 共享资源
     let analyzer_arc = Arc::new(Mutex::new(analyzer));
     let analyzer_clone = analyzer_arc.clone();
     let efd_clone = efd;
     let buffer_clone = FRAME_BUFFER.clone();
 
-    // 启动后台监听线程（非阻塞锁避免死锁）
+    // 启动后台监听线程
     let thread = thread::spawn(move || {
-        loop {
+        while RUNNING.load(Ordering::Acquire) {
             let mut analyzer = match analyzer_clone.try_lock() {
                 Ok(a) => a,
                 Err(_) => {
@@ -117,105 +132,162 @@ pub extern "C" fn frame_analyzer_init() -> c_int {
                 }
             };
 
-            // 读取帧数据并写入缓冲区
-            if let Some((pid, ft)) = analyzer.recv_timeout(Duration::from_millis(50)) {
-                buffer_clone.push(pid, ft);
-                // 触发eventfd通知C++侧
-                let val: u64 = 1;
-                unsafe {
-                    write(efd_clone, &val as *const u64 as *const c_void, 8);
+            let result = catch_unwind(AssertUnwindSafe(|| analyzer.recv_timeout(Duration::from_millis(1))));
+            drop(analyzer); // 立即释放锁
+
+            match result {
+                Ok(Some((pid, ft))) => {
+                    buffer_clone.push(pid, ft);
+                    let val: u64 = 1;
+                    unsafe { write(efd_clone, &val as *const u64 as *const c_void, 8) };
                 }
+                Ok(None) => thread::sleep(Duration::from_millis(1)),
+                Err(_) => break,
             }
         }
+
+        unsafe { close(efd_clone) };
     });
 
     // 初始化全局资源
     *global = Some(analyzer_arc);
     *NOTIFY_FD.lock().unwrap() = Some(efd);
     *NOTIFY_THREAD.lock().unwrap() = Some(thread);
+    RUNNING.store(true, Ordering::Release);
 
     0
 }
 
-/// 绑定目标PID的应用
+/// 绑定目标PID
 #[unsafe(no_mangle)]
 pub extern "C" fn frame_analyzer_attach(pid: c_int) -> c_int {
+    if !RUNNING.load(Ordering::Acquire) {
+        return -1;
+    }
+
     let global = GLOBAL_ANALYZER.lock().unwrap();
     let analyzer = match global.as_ref() {
         Some(a) => a,
         None => return -1,
     };
 
-    let pid = pid as Pid;
-    let mut analyzer = match analyzer.try_lock() {
-        Ok(a) => a,
-        Err(_) => return -1,
+    // 带超时重试的锁获取
+    let mut analyzer_lock = None;
+    for _ in 0..50 {
+        match analyzer.try_lock() {
+            Ok(lock) => {
+                analyzer_lock = Some(lock);
+                break;
+            }
+            Err(_) => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+
+    let mut analyzer = match analyzer_lock {
+        Some(l) => l,
+        None => return -1,
     };
 
-    analyzer.attach_app(pid).map_or(-1, |_| 0)
+    let pid = pid as Pid;
+    match catch_unwind(AssertUnwindSafe(|| analyzer.attach_app(pid))) {
+        Ok(Ok(())) => 0,
+        _ => -1,
+    }
 }
 
-/// 获取指定PID的帧时间数据
+/// 获取帧时间数据
 #[unsafe(no_mangle)]
 pub extern "C" fn frame_analyzer_get_frametime(
     pid: c_int,
     timeout_ms: c_int,
     out_frametime: *mut FrameTime,
 ) -> c_int {
-    if out_frametime.is_null() {
+    if out_frametime.is_null() || !RUNNING.load(Ordering::Acquire) {
         return -1;
     }
 
     let pid = pid as Pid;
-    let timeout = Duration::from_millis(timeout_ms as u64);
+    // 超时逻辑：0表示非阻塞，>5000则设为100ms，否则使用传入值
+    let timeout = Duration::from_millis(match timeout_ms {
+        t if t <= 0 => 0,
+        t if t > 5000 => 100,
+        t => t as u64,
+    });
 
-    // 从缓冲区读取数据（避免直接操作Analyzer）
+    // 清空eventfd
+    if let Some(fd) = *NOTIFY_FD.lock().unwrap() {
+        read_eventfd(fd);
+    }
+
     match FRAME_BUFFER.pop(pid, timeout) {
         Some(frametime) => {
             let ft = FrameTime {
                 secs: frametime.as_secs() as c_uint,
                 nanos: frametime.subsec_nanos() as c_uint,
             };
-            unsafe {
-                *out_frametime = ft;
-            }
+            unsafe { *out_frametime = ft; }
             0
         }
         None => -1,
     }
 }
 
-/// 解绑目标PID的应用
+/// 解绑PID
 #[unsafe(no_mangle)]
 pub extern "C" fn frame_analyzer_detach(pid: c_int) -> c_int {
+    if !RUNNING.load(Ordering::Acquire) {
+        return -1;
+    }
+
     let global = GLOBAL_ANALYZER.lock().unwrap();
     let analyzer = match global.as_ref() {
         Some(a) => a,
         None => return -1,
     };
 
-    let pid = pid as Pid;
-    let mut analyzer = match analyzer.try_lock() {
-        Ok(a) => a,
-        Err(_) => return -1,
-    };
-
-    analyzer.detach_app(pid).map_or(-1, |_| 0)
-}
-
-/// 销毁所有资源并终止后台线程
-#[unsafe(no_mangle)]
-pub extern "C" fn frame_analyzer_destroy() -> c_int {
-    // 终止后台线程
-    if let Some(thread) = NOTIFY_THREAD.lock().unwrap().take() {
-        thread.thread().unpark();
+    let mut analyzer_lock = None;
+    for _ in 0..50 {
+        match analyzer.try_lock() {
+            Ok(lock) => {
+                analyzer_lock = Some(lock);
+                break;
+            }
+            Err(_) => thread::sleep(Duration::from_millis(10)),
+        }
     }
 
-    // 清理Analyzer
+    let mut analyzer = match analyzer_lock {
+        Some(l) => l,
+        None => return -1,
+    };
+
+    let pid = pid as Pid;
+    match catch_unwind(AssertUnwindSafe(|| analyzer.detach_app(pid))) {
+        Ok(Ok(())) => 0,
+        _ => -1,
+    }
+}
+
+/// 销毁资源
+#[unsafe(no_mangle)]
+pub extern "C" fn frame_analyzer_destroy() -> c_int {
+    if !RUNNING.load(Ordering::Acquire) {
+        return 0;
+    }
+
+    RUNNING.store(false, Ordering::Release);
+    FRAME_BUFFER.stop();
+
+    // 等待监听线程退出
+    if let Some(thread) = NOTIFY_THREAD.lock().unwrap().take() {
+        thread.join().ok();
+    }
+
+    // 清理Analyzer资源
     let mut global = GLOBAL_ANALYZER.lock().unwrap();
     if let Some(analyzer) = global.as_ref() {
         if let Ok(mut analyzer) = analyzer.try_lock() {
-            analyzer.detach_apps();
+            let _ = catch_unwind(AssertUnwindSafe(|| analyzer.detach_apps()));
         }
     }
     *global = None;
@@ -223,23 +295,19 @@ pub extern "C" fn frame_analyzer_destroy() -> c_int {
     // 关闭eventfd
     let mut notify_fd = NOTIFY_FD.lock().unwrap();
     if let Some(fd) = *notify_fd {
-        unsafe { close(fd) };
+        unsafe { close(fd); }
     }
     *notify_fd = None;
 
     0
 }
 
-/// 获取事件通知FD（供C++侧epoll监听）
+/// 获取通知FD
 #[unsafe(no_mangle)]
 pub extern "C" fn frame_analyzer_get_notify_fd() -> c_int {
+    if !RUNNING.load(Ordering::Acquire) {
+        return -1;
+    }
     let guard = NOTIFY_FD.lock().unwrap();
     guard.as_ref().copied().unwrap_or(-1) as c_int
-}
-
-/// 废弃接口：Aya 0.13.1不支持RingBuf的as_raw_fd
-#[deprecated(note = "Aya 0.13.1不支持该接口，改用frame_analyzer_get_notify_fd")]
-#[unsafe(no_mangle)]
-pub extern "C" fn frame_analyzer_get_ringbuf_fd(_pid: c_int) -> c_int {
-    -1
 }
