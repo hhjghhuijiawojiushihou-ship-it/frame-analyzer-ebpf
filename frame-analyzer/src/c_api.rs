@@ -14,18 +14,18 @@
 * You should have received a copy of the GNU General Public License
 * along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-
 use std::{
-    sync::{Arc, Mutex, Condvar, LazyLock, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc, Mutex, Condvar, LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
     os::unix::io::RawFd,
     thread,
     collections::VecDeque,
     panic::{catch_unwind, AssertUnwindSafe},
 };
-
 use libc::{c_int, c_uint, c_void, eventfd, EFD_NONBLOCK, EFD_CLOEXEC, write, close, read};
-
 use crate::{Analyzer, Pid};
 
 /// 帧数据缓冲区：分离监听与读取逻辑，避免锁竞争
@@ -57,6 +57,7 @@ impl FrameBuffer {
         if !self.running.load(Ordering::Acquire) {
             return None;
         }
+        // 修复：移除多余的 mut
         let data = self.data.lock().unwrap();
         let (mut data, _) = self.cond.wait_timeout(data, timeout).unwrap();
         data.iter().position(|(p, _)| *p == pid).map(|pos| {
@@ -77,6 +78,11 @@ static GLOBAL_ANALYZER: Mutex<Option<Arc<Mutex<Analyzer>>>> = Mutex::new(None);
 static FRAME_BUFFER: LazyLock<Arc<FrameBuffer>> = LazyLock::new(|| Arc::new(FrameBuffer::new()));
 static NOTIFY_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 static NOTIFY_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
+
+// 新增：暂停控制相关全局变量
+static PAUSED: AtomicBool = AtomicBool::new(false);
+static PAUSE_COND: Condvar = Condvar::new();
+static PAUSE_MTX: Mutex<()> = Mutex::new(());
 
 /// C接口帧时间结构体
 #[repr(C)]
@@ -121,9 +127,22 @@ pub extern "C" fn frame_analyzer_init() -> c_int {
     let efd_clone = efd;
     let buffer_clone = FRAME_BUFFER.clone();
 
-    // 启动后台监听线程
+    // 启动后台监听线程（改造后支持暂停）
     let thread = thread::spawn(move || {
         while RUNNING.load(Ordering::Acquire) {
+            // 新增：检查暂停标记，若暂停则阻塞等待（修复let_underscore_lock错误）
+            let pause_guard = PAUSE_MTX.lock().unwrap();
+            let paused_guard = PAUSE_COND.wait_while(pause_guard, |_guard| {
+                PAUSED.load(Ordering::Acquire) && RUNNING.load(Ordering::Acquire)
+            }).unwrap();
+            drop(paused_guard); // 显式释放guard（可选）
+
+            // 若此时已停止，直接退出循环
+            if !RUNNING.load(Ordering::Acquire) {
+                break;
+            }
+
+            // 原有逻辑：获取Analyzer锁并读取帧数据
             let mut analyzer = match analyzer_clone.try_lock() {
                 Ok(a) => a,
                 Err(_) => {
@@ -275,6 +294,10 @@ pub extern "C" fn frame_analyzer_destroy() -> c_int {
         return 0;
     }
 
+    // 停止时先恢复线程，确保能正常退出
+    PAUSED.store(false, Ordering::Release);
+    PAUSE_COND.notify_all();
+
     RUNNING.store(false, Ordering::Release);
     FRAME_BUFFER.stop();
 
@@ -308,6 +331,40 @@ pub extern "C" fn frame_analyzer_get_notify_fd() -> c_int {
     if !RUNNING.load(Ordering::Acquire) {
         return -1;
     }
+
     let guard = NOTIFY_FD.lock().unwrap();
     guard.as_ref().copied().unwrap_or(-1) as c_int
+}
+
+// 新增：暂停监听线程（C接口）
+#[unsafe(no_mangle)]
+pub extern "C" fn frame_analyzer_pause() -> c_int {
+    if !RUNNING.load(Ordering::Acquire) {
+        return -1; // 未初始化，返回错误
+    }
+
+    PAUSED.store(true, Ordering::Release);
+    0 // 成功暂停返回0
+}
+
+// 新增：恢复监听线程（C接口）
+#[unsafe(no_mangle)]
+pub extern "C" fn frame_analyzer_resume() -> c_int {
+    if !RUNNING.load(Ordering::Acquire) {
+        return -1; // 未初始化，返回错误
+    }
+
+    PAUSED.store(false, Ordering::Release);
+    PAUSE_COND.notify_all(); // 唤醒阻塞的线程
+    0 // 成功恢复返回0
+}
+
+// 新增：查询暂停状态（C接口）
+#[unsafe(no_mangle)]
+pub extern "C" fn frame_analyzer_is_paused() -> c_int {
+    if PAUSED.load(Ordering::Acquire) {
+        1 // 暂停中返回1
+    } else {
+        0 // 运行中返回0
+    }
 }
