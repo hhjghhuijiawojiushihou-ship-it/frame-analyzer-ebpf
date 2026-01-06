@@ -1,19 +1,20 @@
 /*
-* Copyright (c) 2024 shadow3aaa@gitbub.com
-*
-* This program is free software: you can redistribute it and/or modify
-* it under the terms of the GNU General Public License as published by
-* the Free Software Foundation, either version 3 of the License, or
-* (at your option) any later version.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-* GNU General Public License for more details.
-*
-* You should have received a copy of the GNU General Public License
-* along with this program. If not, see <https://www.gnu.org/licenses/>.
-*/
+ * Copyright (c) 2024 shadow3aaa@gitbub.com
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 
 #![warn(clippy::nursery, clippy::all, clippy::pedantic)]
 #![allow(
@@ -23,12 +24,14 @@
     clippy::cast_possible_truncation
 )]
 
+
 pub mod c_api;
 
 mod analyze_target;
 mod ebpf;
 mod error;
 mod uprobe;
+
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -42,6 +45,7 @@ use analyze_target::AnalyzeTarget;
 pub use error::AnalyzerError;
 use error::Result;
 use uprobe::UprobeHandler;
+
 
 pub type Pid = i32;
 
@@ -63,9 +67,13 @@ impl Analyzer {
     }
 
     pub fn attach_app(&mut self, pid: Pid) -> Result<()> {
+        // 如果已经监控这个PID，直接返回
         if self.map.contains_key(&pid) {
             return Ok(());
         }
+
+        // 删除所有旧的监控（只保留最新的一个）
+        self.detach_apps();
 
         let uprobe = UprobeHandler::attach_app(pid)?;
         self.map.insert(pid, AnalyzeTarget::new(uprobe));
